@@ -309,6 +309,18 @@ impl Rotary {
     }
 }
 
+/// The chuck's circumference (mm) as Rotary Setup shows it, for an object `diameter` mm across.
+fn circumference_text(diameter: f64) -> String {
+    format!("{:.1}", diameter * std::f64::consts::PI)
+}
+
+/// The object diameter a circumference typed into Rotary Setup implies, e.g. "251.3" → 79.99 mm.
+/// Whitespace is ignored and the typographic minus sign is accepted, as for the other fields.
+fn circumference_to_diameter(text: &str) -> Option<f64> {
+    let text: String = text.chars().filter(|c| !c.is_whitespace()).map(|c| if c == '−' { '-' } else { c }).collect();
+    text.parse::<f64>().ok().map(|circumference| circumference / std::f64::consts::PI)
+}
+
 /// A labelled button that sends G-code lines to the machine.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, Default)]
 pub struct Macro {
@@ -1802,10 +1814,22 @@ impl Laser {
                     }
                     RotaryKind::Chuck => {
                         ui.label("Object diameter");
-                        ui.add(egui::DragValue::new(&mut r.object_diameter).range(1.0..=1000.0).speed(0.1).suffix(" mm"));
+                        ui.add(egui::DragValue::new(&mut r.object_diameter).range(1.0..=1000.0).speed(0.1).suffix(" mm"))
+                            .on_hover_text("The object's diameter where it's engraved. Set this or the circumference; the other follows.");
                         ui.end_row();
                         ui.label("Circumference");
-                        ui.label(format!("{:.1} mm", r.surface_per_turn()));
+                        // Both fields edit the diameter (the one stored value), so the circumference is
+                        // shown and typed by converting it to and from the diameter it implies.
+                        ui.add(
+                            egui::DragValue::new(&mut r.object_diameter)
+                                // A tenth of a millimetre of circumference per pixel of drag.
+                                .speed(0.1 / std::f64::consts::PI)
+                                .range(1.0..=1000.0)
+                                .suffix(" mm")
+                                .custom_formatter(|diameter, _| circumference_text(diameter))
+                                .custom_parser(circumference_to_diameter),
+                        )
+                        .on_hover_text("How far the surface goes round the object. Set this or the diameter above; the other follows.");
                         ui.end_row();
                     }
                 }
@@ -1821,7 +1845,7 @@ impl Laser {
             });
             ui.weak(match r.kind {
                 RotaryKind::Roller => "Roller: the design's height wraps around the object; the object size doesn't matter.",
-                RotaryKind::Chuck => "Chuck: set the object's diameter at the spot being engraved.",
+                RotaryKind::Chuck => "Chuck: set the object's diameter at the spot being engraved, or its circumference; the other follows.",
             });
             if gcode && r.enabled && r.axis == RotaryAxis::Z && self.settings.z_axis {
                 ui.colored_label(ui.visuals().warn_fg_color, "The machine's Z axis is set up for layer Z offsets (Machine Settings). Those are off while the rotary uses Z.");
@@ -1953,6 +1977,19 @@ pub fn to_machine_job(job: &Job, to_machine: impl Fn(Point) -> (f64, f64)) -> Ve
 #[cfg(test)]
 mod rotary_tests {
     use super::*;
+
+    #[test]
+    fn circumference_and_diameter_follow_each_other() {
+        // Displayed from the diameter, and typed back as the diameter it implies.
+        assert_eq!(circumference_text(80.0), "251.3");
+        let diameter = circumference_to_diameter("251.3").unwrap();
+        assert!((diameter * std::f64::consts::PI - 251.3).abs() < 1e-9, "{diameter}");
+        assert_eq!(circumference_text(diameter), "251.3");
+        // As forgiving as egui's own number fields.
+        assert_eq!(circumference_to_diameter(" 251.3 "), circumference_to_diameter("251.3"));
+        assert_eq!(circumference_to_diameter("abc"), None);
+        assert_eq!(circumference_to_diameter("251,3"), None);
+    }
 
     #[test]
     fn rotary_migration_and_roundtrip() {
