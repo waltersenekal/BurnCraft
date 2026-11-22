@@ -169,6 +169,7 @@ If you run BurnCraft on any of the untested controllers, a report of how it went
   - **Fill:** raster-fill closed shapes (holes stay empty), at any scan angle, with optional cross-hatching. **Offset fill** instead traces rings inward from the outline, which is much faster for thin text and outlines.
   - **Fill + Line:** engrave the inside, then cut the outline.
   - **Image:** raster-engrave photos with Threshold, Ordered, Floyd–Steinberg, Atkinson, Jarvis or Stucki dithering, or Grayscale (power follows darkness on G-code machines).
+- **Move objects between layers:** click a palette colour, or right-click the selection and choose **Move to Layer** (the layer they're on is highlighted).
 - **Per-layer settings:** speed, min/max power, passes, line interval, scan both ways, overscan, air assist, output on/off, visibility, pulse frequency for galvos, and perforation (dashed cutting: cut length and gap).
 - **Advanced settings:** kerf compensation, tabs/bridges (count, width, skip holes), lead-ins that start in the scrap, overcut so parts drop out cleanly, and laser on/off delays to pierce thick material (G-code machines).
 - **Cut Box:** one click adds a rectangle (with a margin and optional rounded corners) around the design on its own last layer, to cut the piece free.
