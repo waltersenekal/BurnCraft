@@ -72,14 +72,23 @@ fn hardware_adapter(adapters: &[eframe::wgpu::Adapter], surface: Option<&eframe:
 fn options(renderer: eframe::Renderer, persist_window: bool, software_ok: bool) -> eframe::NativeOptions {
     // Drawn by build.rs.
     let icon = eframe::egui::IconData { rgba: include_bytes!(concat!(env!("OUT_DIR"), "/icon-256.rgba")).to_vec(), width: 256, height: 256 };
+    // Wayland has no way for a window to carry its own icon: the compositor looks up the icon of
+    // the .desktop file whose name matches this app id (see scripts/linux-desktop.sh). It is the
+    // same id as CFBundleIdentifier on macOS.
+    const APP_ID: &str = "org.burncraft.BurnCraft";
+    // eframe names its state folder after the app id, so pin it to where it has always been and
+    // settings, window position and recovery files stay together in one place.
+    let persistence_path = eframe::storage_dir("BurnCraft").map(|dir| dir.join("app.ron"));
     let selector: Option<eframe::egui_wgpu::NativeAdapterSelectorMethod> = if software_ok { None } else { Some(std::sync::Arc::new(hardware_adapter)) };
     eframe::NativeOptions {
         viewport: eframe::egui::ViewportBuilder::default()
             .with_title("BurnCraft")
             .with_icon(icon)
+            .with_app_id(APP_ID)
             .with_inner_size([1500.0, 950.0])
             .with_min_inner_size([1000.0, 650.0])
             .with_drag_and_drop(true),
+        persistence_path,
         renderer,
         persist_window,
         wgpu_options: eframe::egui_wgpu::WgpuConfiguration {

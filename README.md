@@ -286,6 +286,14 @@ sh scripts/macos-app.sh
 
 It builds BurnCraft and puts the app in `target/release/BurnCraft.app`. Drag it to Applications. The first time it uses the camera, macOS asks whether **BurnCraft** may use it.
 
+**Linux desktop icon:** Wayland compositors don't take a window's icon from the program itself; they look for a `.desktop` file whose name matches the window's app id. Started from a terminal without one, BurnCraft shows the desktop's placeholder icon. To install the menu entry and the icon in the usual sizes for your user:
+
+```bash
+sh scripts/linux-desktop.sh
+```
+
+It writes `~/.local/share/applications/org.burncraft.BurnCraft.desktop` and `~/.local/share/icons/hicolor/*/apps/org.burncraft.BurnCraft.png`. `sh scripts/linux-desktop.sh --uninstall` removes them again; restart BurnCraft (or launch it from the menu) afterwards.
+
 ### Platform notes
 
 | | Windows | macOS | Linux |
