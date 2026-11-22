@@ -169,6 +169,7 @@ If you run BurnCraft on any of the untested controllers, a report of how it went
   - **Fill:** raster-fill closed shapes (holes stay empty), at any scan angle, with optional cross-hatching. **Offset fill** instead traces rings inward from the outline, which is much faster for thin text and outlines.
   - **Fill + Line:** engrave the inside, then cut the outline.
   - **Image:** raster-engrave photos with Threshold, Ordered, Floyd–Steinberg, Atkinson, Jarvis or Stucki dithering, or Grayscale (power follows darkness on G-code machines).
+- **Move objects between layers:** click a palette colour, or right-click the selection and choose **Move to Layer** (the layer they're on is highlighted).
 - **Per-layer settings:** speed, min/max power, passes, line interval, scan both ways, overscan, air assist, output on/off, visibility, pulse frequency for galvos, and perforation (dashed cutting: cut length and gap).
 - **Advanced settings:** kerf compensation, tabs/bridges (count, width, skip holes), lead-ins that start in the scrap, overcut so parts drop out cleanly, and laser on/off delays to pierce thick material (G-code machines).
 - **Cut Box:** one click adds a rectangle (with a margin and optional rounded corners) around the design on its own last layer, to cut the piece free.
@@ -191,7 +192,7 @@ If you run BurnCraft on any of the untested controllers, a report of how it went
 - **Macros:** one-click buttons that send your own G-code, for example LaserPecker's red-dot and electric-stand commands.
 - **Rotary** (Laser → Rotary Setup, Ctrl+Shift+R):
   - Roller or chuck rotaries that replace the Y axis; jobs and framing are scaled so the design wraps the object at true size.
-  - A-axis output for 4-axis GRBL boards.
+  - A-axis output for 4-axis GRBL boards, or Z-axis output for rotaries wired to the controller's Z stepper (common for chucks on diode lasers).
   - "Rotate once" for calibration, plus a warning when a design is taller than the object's circumference.
   - Not available for galvos yet.
 - **Remote monitoring** (Settings → Remote monitoring): a page for any phone or computer on your network.
@@ -285,6 +286,14 @@ sh scripts/macos-app.sh
 
 It builds BurnCraft and puts the app in `target/release/BurnCraft.app`. Drag it to Applications. The first time it uses the camera, macOS asks whether **BurnCraft** may use it.
 
+**Linux desktop icon:** Wayland compositors don't take a window's icon from the program itself; they look for a `.desktop` file whose name matches the window's app id. Started from a terminal without one, BurnCraft shows the desktop's placeholder icon. To install the menu entry and the icon in the usual sizes for your user:
+
+```bash
+sh scripts/linux-desktop.sh
+```
+
+It writes `~/.local/share/applications/org.burncraft.BurnCraft.desktop` and `~/.local/share/icons/hicolor/*/apps/org.burncraft.BurnCraft.png`. `sh scripts/linux-desktop.sh --uninstall` removes them again; restart BurnCraft (or launch it from the menu) afterwards.
+
 ### Platform notes
 
 | | Windows | macOS | Linux |
@@ -298,7 +307,7 @@ Find My Laser, file import and the camera have been checked on all three. Galvo 
 
 ## Connecting your laser
 
-Open **Devices** in the Laser panel (or from the toolbar) and add your machine: **Find My Laser** finds lasers plugged in by USB (GRBL, Marlin, Smoothieware, Ruida) and sets the port and baud rate; **Create Manually** walks through controller, connection, size and origin step by step. Select the machine in the list, then click **Connect**.
+Open **Devices** in the Laser panel (or from the toolbar) and add your machine: **Find My Laser** finds lasers plugged in by USB (GRBL, Marlin, Smoothieware, Ruida) and sets the port and baud rate, plus the work area for GRBL boards (from their `$130` and `$131` settings); **Create Manually** walks through controller, connection, size and origin step by step, with **Read from machine** to fetch the work area. Select the machine in the list, then click **Connect**.
 
 <details>
 <summary><b>Ruida (most CO2 lasers)</b></summary>
@@ -316,7 +325,7 @@ Open **Devices** in the Laser panel (or from the toolbar) and add your machine: 
 1. Choose **G-code**, then the firmware.
 2. Pick the **serial port** and **baud rate** (usually 115200).
 3. Set the **full-power S value**: GRBL `$30` is usually 1000, Marlin uses 255, Smoothieware uses 1.
-4. Set the work area and origin corner. Most of these machines home bottom-left.
+4. Set the work area (or click **Read from machine** to take it from the controller's `$130` and `$131`) and the origin corner. Most of these machines home bottom-left.
 5. Optional: add start/end G-code, macros, M7 air assist, or turn DTR off if the board shouldn't reset when the port opens.
 
 For GRBL, make sure laser mode is enabled (`$32=1`) so the laser switches off during travel moves.

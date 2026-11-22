@@ -469,7 +469,7 @@ impl BurnCraftApp {
         for tip in [
             "Mouse wheel zooms; drag with the middle or right mouse button to pan.",
             "Esc goes back to the Select tool; Delete removes the selection.",
-            "Click a palette colour to put the selection on that layer.",
+            "Click a palette colour to put the selection on that layer, or right-click the selection and choose Move to Layer.",
             "Ctrl+Z undoes, Ctrl+Y redoes; the History tab lists every step.",
             "Alt+P previews the job before you run it.",
         ] {

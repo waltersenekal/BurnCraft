@@ -1,7 +1,7 @@
 //! Finding G-code laser controllers on serial ports ("Find My Laser"): open a port, wake the board,
 //! and recognise its firmware from what it says.
 
-use crate::gcode::Dialect;
+use crate::gcode::{CustomGcode, Dialect};
 use std::io::{Read, Write};
 use std::time::{Duration, Instant};
 
@@ -13,6 +13,8 @@ pub struct Found {
     pub dialect: Dialect,
     /// What the board called itself, e.g. "Grbl 1.1h".
     pub info: String,
+    /// The work area in mm from the board's own settings (`$130` × `$131`), when it reports them.
+    pub bed: Option<(f64, f64)>,
 }
 
 /// Speeds tried, most common first (460800 for LaserPecker and some ESP32 boards).
@@ -47,8 +49,9 @@ pub fn identify(text: &str) -> Option<(Dialect, String)> {
 }
 
 /// Tries each speed on `port` and returns the controller found, if any. Opening a port resets
-/// most Arduino-style boards, which then greet; others are asked who they are. An error means the
-/// port couldn't be opened at all (busy, gone, or no permission).
+/// most Arduino-style boards, which then greet; others are asked who they are. A GRBL board is
+/// also asked for its settings, so its work area (`$130` × `$131`) comes back with it. An error
+/// means the port couldn't be opened at all (busy, gone, or no permission).
 pub fn probe(port: &str) -> Result<Option<Found>, String> {
     for baud in PROBE_BAUDS {
         let mut serial = match serialport::new(port, baud).timeout(Duration::from_millis(50)).open() {
@@ -74,7 +77,10 @@ pub fn probe(port: &str) -> Result<Option<Found>, String> {
                 Ok(n) if n > 0 => {
                     heard.extend_from_slice(&buf[..n]);
                     if let Some((dialect, info)) = identify(&String::from_utf8_lossy(&heard)) {
-                        return Ok(Some(Found { port: port.to_string(), baud, dialect, info }));
+                        // GRBL can also say how big its work area is; other firmware uses
+                        // different settings commands, so they keep the guessed size.
+                        let bed = if dialect.is_grbl() { read_work_area(serial, dialect) } else { None };
+                        return Ok(Some(Found { port: port.to_string(), baud, dialect, info, bed }));
                     }
                 }
                 _ => crate::stream::nothing_read(),
@@ -82,6 +88,13 @@ pub fn probe(port: &str) -> Result<Option<Found>, String> {
         }
     }
     Ok(None)
+}
+
+/// Reads the board's settings over the port already open in `serial` and returns its work area.
+fn read_work_area(serial: Box<dyn serialport::SerialPort>, dialect: Dialect) -> Option<(f64, f64)> {
+    let mut grbl = crate::stream::Grbl::with_link(Box::new(serial)).with_dialect(dialect, CustomGcode::default());
+    let (settings, _) = grbl.read_settings();
+    crate::settings::work_area(&settings.ok()?)
 }
 
 /// Why a port couldn't be opened, in plain words.

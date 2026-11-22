@@ -40,6 +40,9 @@ pub struct Wizard {
     /// The result of "Check connection" (running while the receiver is set).
     check: Option<mpsc::Receiver<Result<String, String>>>,
     check_result: Option<Result<String, String>>,
+    /// Reading the work area from the chosen port (running while the receiver is set).
+    read_size: Option<mpsc::Receiver<Option<(f64, f64)>>>,
+    read_size_result: Option<Option<(f64, f64)>>,
 }
 
 /// What the wizard asks of the Devices window this frame.
@@ -51,7 +54,7 @@ pub enum WizardOutcome {
 
 impl Wizard {
     pub fn new() -> Self {
-        let mut w = Self { step: Step::Controller, choice: 0, settings: LaserSettings::default(), name: String::new(), check: None, check_result: None };
+        let mut w = Self { step: Step::Controller, choice: 0, settings: LaserSettings::default(), name: String::new(), check: None, check_result: None, read_size: None, read_size_result: None };
         w.apply_choice();
         w
     }
@@ -59,6 +62,8 @@ impl Wizard {
     /// Puts the chosen controller's usual settings in place.
     fn apply_choice(&mut self) {
         let (kind, dialect, label, _) = CHOICES[self.choice];
+        self.read_size = None;
+        self.read_size_result = None;
         let s = &mut self.settings;
         s.controller = kind;
         s.dialect = dialect;
@@ -123,7 +128,16 @@ impl Wizard {
             self.check_result = Some(r);
             self.check = None;
         }
-        if self.check.is_some() {
+        if let Some(rx) = &self.read_size
+            && let Ok(area) = rx.try_recv()
+        {
+            if let Some((w, h)) = area {
+                self.settings.bed = (w, h);
+            }
+            self.read_size_result = Some(area);
+            self.read_size = None;
+        }
+        if self.check.is_some() || self.read_size.is_some() {
             ctx.request_repaint_after(std::time::Duration::from_millis(100));
         }
         let mut outcome = WizardOutcome::Open;
@@ -165,6 +179,12 @@ impl Wizard {
                                 units.drag(ui, &mut self.settings.bed.0, 10.0..=5000.0);
                                 ui.label("×");
                                 units.drag(ui, &mut self.settings.bed.1, 10.0..=5000.0);
+                                if self.settings.controller == ControllerKind::Grbl && self.settings.dialect.is_grbl() && !self.settings.serial_port.is_empty() {
+                                    let button = egui::Button::new(if self.read_size.is_some() { "Reading…" } else { "Read from machine" });
+                                    if ui.add_enabled(self.read_size.is_none(), button).on_hover_text("Read the work area from the controller's own settings ($130 × $131)").clicked() {
+                                        self.read_work_area();
+                                    }
+                                }
                             });
                             ui.end_row();
                         }
@@ -180,13 +200,23 @@ impl Wizard {
                         ui.end_row();
                     });
                     ui.add_space(4.0);
+                    match self.read_size_result {
+                        Some(Some((w, h))) => {
+                            ui.weak(format!("Read {} × {} from the machine.", units.format(w), units.format(h)));
+                        }
+                        Some(None) => {
+                            ui.colored_label(ui.visuals().warn_fg_color, "The machine didn't report its work area; set it here instead.");
+                        }
+                        None => {}
+                    }
                     if self.settings.controller != ControllerKind::Lp2 {
                         ui.weak("Speeds can be shown per second or per minute; it only changes the display. Millimetres or inches is set under View.");
                     }
                     ui.weak(match self.settings.controller {
                         ControllerKind::Galvo => "The size of the square the lens can mark, as printed on the lens (e.g. 110 mm).",
                         ControllerKind::Ruida => "Width × height the head can travel. A Ruida reports its own size when it connects.",
-                        ControllerKind::Grbl => "Width × height the head can travel (GRBL: $130 × $131).",
+                        ControllerKind::Grbl if self.settings.dialect.is_grbl() => "Width × height the head can travel. Read from the controller ($130 × $131), or type it.",
+                        ControllerKind::Grbl => "Width × height the head can travel.",
                         ControllerKind::Lp2 => "Speeds are set as depth (1-100 %), as in the LaserPecker app: deeper is slower.",
                     });
                 }
@@ -264,6 +294,21 @@ impl Wizard {
         }
     }
 
+    /// Reads the work area from the chosen port in the background, filling it in when it arrives.
+    fn read_work_area(&mut self) {
+        let (port, baud, dialect, dtr) = (self.settings.serial_port.clone(), self.settings.baud, self.settings.dialect, self.settings.dtr);
+        let (tx, rx) = mpsc::channel();
+        std::thread::spawn(move || {
+            let area = bc_grbl::Grbl::open(&port, baud, dialect, bc_grbl::CustomGcode::default(), dtr)
+                .ok()
+                .and_then(|mut g| g.read_settings().0.ok())
+                .and_then(|s| bc_grbl::settings::work_area(&s));
+            let _ = tx.send(area);
+        });
+        self.read_size = Some(rx);
+        self.read_size_result = None;
+    }
+
     fn address_step(&mut self, ui: &mut egui::Ui, ports: &[String]) {
         let s = &mut self.settings;
         let ethernet = s.controller == ControllerKind::Ruida && !s.ruida_usb;
@@ -317,12 +362,17 @@ impl Wizard {
         egui::Grid::new("wizard-port").num_columns(2).spacing([8.0, 6.0]).show(ui, |ui| {
             ui.label("Serial port");
             let shown = if s.serial_port.is_empty() { "(Choose later)".to_string() } else { s.serial_port.clone() };
+            let mut changed = false;
             egui::ComboBox::from_id_salt("wizard-port").selected_text(shown).width(160.0).show_ui(ui, |ui| {
-                ui.selectable_value(&mut s.serial_port, String::new(), "(Choose later)");
+                changed |= ui.selectable_value(&mut s.serial_port, String::new(), "(Choose later)").changed();
                 for p in ports {
-                    ui.selectable_value(&mut s.serial_port, p.clone(), p);
+                    changed |= ui.selectable_value(&mut s.serial_port, p.clone(), p).changed();
                 }
             });
+            if changed {
+                // A size read from the old port no longer applies.
+                self.read_size_result = None;
+            }
             ui.end_row();
             if s.controller == ControllerKind::Grbl {
                 ui.label("Baud rate");
@@ -396,6 +446,8 @@ pub struct Found {
     pub ruida_model: RuidaModel,
     /// What the controller called itself.
     pub info: String,
+    /// Work area (mm) the controller reported, e.g. GRBL's `$130` × `$131`.
+    pub bed: Option<(f64, f64)>,
 }
 
 impl Found {
@@ -410,7 +462,7 @@ impl Found {
         } else if self.controller == ControllerKind::Lp2 {
             s.bed = bc_lp2::FIELD;
         } else {
-            s.bed = (400.0, 400.0);
+            s.bed = self.bed.unwrap_or((400.0, 400.0));
         }
         let name = match self.controller {
             ControllerKind::Ruida => "Ruida (USB)".to_string(),
@@ -475,13 +527,13 @@ impl Finder {
                 }
                 // The LaserPecker 2 (CH340) answers binary frames, not G-code.
                 if p.is_ch340() && bc_lp2::Controller::probe(&p.name).unwrap_or(false) {
-                    let found = Found { port: p.name.clone(), controller: ControllerKind::Lp2, dialect: Dialect::Grbl, baud: bc_lp2::BAUD, ruida_model: RuidaModel::default(), info: "LaserPecker 2".into() };
+                    let found = Found { port: p.name.clone(), controller: ControllerKind::Lp2, dialect: Dialect::Grbl, baud: bc_lp2::BAUD, ruida_model: RuidaModel::default(), info: "LaserPecker 2".into(), bed: None };
                     let _ = tx.send(ScanEvent::Found(found));
                     continue;
                 }
                 match bc_grbl::probe::probe(&p.name) {
                     Ok(Some(f)) => {
-                        let _ = tx.send(ScanEvent::Found(Found { port: f.port, controller: ControllerKind::Grbl, dialect: f.dialect, baud: f.baud, ruida_model: RuidaModel::default(), info: f.info }));
+                        let _ = tx.send(ScanEvent::Found(Found { port: f.port, controller: ControllerKind::Grbl, dialect: f.dialect, baud: f.baud, ruida_model: RuidaModel::default(), info: f.info, bed: f.bed }));
                     }
                     Ok(None) => {}
                     Err(why) => {
@@ -494,7 +546,7 @@ impl Finder {
         Self { rx, found: Vec::new(), skipped: Vec::new(), status: "Looking for serial ports…".into(), done: false, selected: None }
     }
 
-    pub fn show(&mut self, ctx: &egui::Context) -> FinderOutcome {
+    pub fn show(&mut self, ctx: &egui::Context, units: Units) -> FinderOutcome {
         while let Ok(e) = self.rx.try_recv() {
             match e {
                 ScanEvent::Checking(port) => self.status = format!("Checking {port}…"),
@@ -524,7 +576,7 @@ impl Finder {
         let mut open = true;
         crate::dialogs::centered(ctx, "Find My Laser").open(&mut open).resizable(false).auto_sized().collapsible(false).show(ctx, |ui| {
             // A set width, so long messages wrap instead of widening the window.
-            ui.set_width(460.0);
+            ui.set_width(560.0);
             ui.label("Looking for lasers plugged in over USB.");
             ui.weak("Network (Ethernet) controllers aren't found this way: use Create Manually and enter the IP address.");
             ui.add_space(6.0);
@@ -542,10 +594,11 @@ impl Finder {
                     ui.weak(if self.done { "No lasers found." } else { "Nothing found yet." });
                     return;
                 }
-                egui::Grid::new("found-grid").num_columns(3).striped(true).spacing([16.0, 4.0]).show(ui, |ui| {
+                egui::Grid::new("found-grid").num_columns(4).striped(true).spacing([16.0, 4.0]).show(ui, |ui| {
                     ui.strong("Controller");
                     ui.strong("Type");
                     ui.strong("Connection");
+                    ui.strong("Work area");
                     ui.end_row();
                     for (i, f) in self.found.iter().enumerate() {
                         if ui.selectable_label(self.selected == Some(i), &f.info).clicked() {
@@ -553,9 +606,16 @@ impl Finder {
                         }
                         ui.label(f.kind_label());
                         ui.label(format!("{} @ {}", f.port, f.baud));
+                        ui.label(match f.bed {
+                            Some((w, h)) => format!("{} × {}", units.format(w), units.format(h)),
+                            None => "—".into(),
+                        });
                         ui.end_row();
                     }
                 });
+                if self.found.iter().any(|f| f.bed.is_some()) {
+                    ui.weak("The work area came from the controller's own settings (GRBL: $130 × $131).");
+                }
             });
             for (port, why) in &self.skipped {
                 ui.colored_label(ui.visuals().warn_fg_color, format!("Couldn't check {port}: {why}"));
@@ -592,6 +652,25 @@ impl Finder {
 fn probe_ruida(port: &str) -> Option<Found> {
     RuidaModel::ALL.into_iter().find_map(|model| {
         let id = bc_ruida::Controller::connect_usb(port, model).ok()?.card_id().ok()?;
-        Some(Found { port: port.to_string(), controller: ControllerKind::Ruida, dialect: Dialect::Grbl, baud: 115_200, ruida_model: model, info: format!("Ruida {}", model.label().split(' ').next().unwrap_or("")).trim().to_string() + &format!(" (card {id:X})") })
+        Some(Found { port: port.to_string(), controller: ControllerKind::Ruida, dialect: Dialect::Grbl, baud: 115_200, ruida_model: model, info: format!("Ruida {}", model.label().split(' ').next().unwrap_or("")).trim().to_string() + &format!(" (card {id:X})"), bed: None })
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn found(bed: Option<(f64, f64)>) -> Found {
+        Found { port: "COM3".into(), controller: ControllerKind::Grbl, dialect: Dialect::Grbl, baud: 115_200, ruida_model: RuidaModel::default(), info: "Grbl 1.1h".into(), bed }
+    }
+
+    #[test]
+    fn a_found_grbl_uses_the_work_area_it_reported() {
+        assert_eq!(found(Some((381.0, 305.0))).profile().settings.bed, (381.0, 305.0));
+    }
+
+    #[test]
+    fn a_found_grbl_without_a_work_area_keeps_the_usual_size() {
+        assert_eq!(found(None).profile().settings.bed, (400.0, 400.0));
+    }
 }

@@ -316,6 +316,41 @@ impl BurnCraftApp {
         });
     }
 
+    /// The layer all the selected shapes are on, when they share one.
+    fn selection_layer(&self) -> Option<usize> {
+        let mut layers = self.selection.iter().filter_map(|id| self.doc.shape(*id)).map(|s| s.layer);
+        let first = layers.next()?;
+        layers.all(|layer| layer == first).then_some(first)
+    }
+
+    /// The right-click menu's "Move to Layer": puts the selection on another palette layer.
+    fn move_to_layer_menu(&mut self, ui: &mut egui::Ui) {
+        if self.selection.is_empty() {
+            return;
+        }
+        let on = self.selection_layer();
+        let mut layers = self.doc.palette_layers();
+        if self.current_layer < CUT_LAYER_COUNT && !layers.contains(&self.current_layer) {
+            layers.push(self.current_layer);
+            layers.sort_unstable();
+        }
+        ui.menu_button("Move to Layer", |ui| {
+            for &i in &layers {
+                let here = on == Some(i);
+                let name = self.doc.layers[i].name.clone();
+                let [r, g, b] = self.doc.layers[i].rgb(i);
+                ui.horizontal(|ui| {
+                    let (swatch, _) = ui.allocate_exact_size(egui::vec2(16.0, 16.0), egui::Sense::hover());
+                    ui.painter().rect_filled(swatch, 2.0, Color32::from_rgb(r, g, b));
+                    if ui.selectable_label(here, name).clicked() && !here {
+                        self.assign_layer(i);
+                        ui.close();
+                    }
+                });
+            }
+        });
+    }
+
     fn set_selection(&mut self, sel: BTreeSet<u64>) {
         self.selection = self.doc.expand_groups(&sel);
     }
@@ -1541,6 +1576,7 @@ impl BurnCraftApp {
         for c in [Cut, Copy, Paste, Duplicate, Delete] {
             self.command_item(ui, c);
         }
+        self.move_to_layer_menu(ui);
         ui.separator();
         for c in [Group, Ungroup, Lock, Unlock] {
             self.command_item(ui, c);

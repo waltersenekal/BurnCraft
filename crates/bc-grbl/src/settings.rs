@@ -98,6 +98,13 @@ pub fn parse(text: &str) -> Vec<(u32, String)> {
     out
 }
 
+/// The machine's work area (mm, X × Y) as its own settings give it: `$130` × `$131`, the maximum
+/// travel GRBL allows for those axes. `None` if either is missing or not a positive number.
+pub fn work_area(settings: &[(u32, String)]) -> Option<(f64, f64)> {
+    let value = |id: u32| settings.iter().find(|(i, _)| *i == id).and_then(|(_, v)| v.trim().parse::<f64>().ok()).filter(|v| *v > 0.0);
+    Some((value(130)?, value(131)?))
+}
+
 /// A settings file: one `$N=value` line per setting, with what it is as a comment.
 pub fn to_file(settings: &[(u32, String)], header: &str) -> String {
     let mut out = String::new();
@@ -119,5 +126,24 @@ pub fn check(id: u32, value: &str) -> Result<(), String> {
         Some(Kind::AxisMask) if !(0.0..=7.0).contains(&v) || v.fract() != 0.0 => Err(format!("${id} must be a whole number from 0 to 7")),
         _ if v < 0.0 => Err(format!("${id} can't be negative")),
         _ => Ok(()),
+    }
+}
+
+#[cfg(test)]
+mod work_area_tests {
+    use super::*;
+
+    #[test]
+    fn reads_x_and_y_travel() {
+        let settings = parse("$100=80.000\n$130=381.000\n$131=305.000\n$132=50.000\nok");
+        assert_eq!(work_area(&settings), Some((381.0, 305.0)));
+    }
+
+    #[test]
+    fn needs_both_axes_and_positive_values() {
+        assert_eq!(work_area(&parse("$130=381.000")), None);
+        assert_eq!(work_area(&parse("$131=305.000")), None);
+        assert_eq!(work_area(&parse("$130=0.000\n$131=305.000")), None);
+        assert_eq!(work_area(&parse("$130=abc\n$131=305.000")), None);
     }
 }

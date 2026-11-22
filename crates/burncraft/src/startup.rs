@@ -200,7 +200,9 @@ pub fn message_box(title: &str, text: &str, warning: bool, yes_no: bool) -> bool
     }
 }
 
-/// Logs a crash outside Rust and tells the user, from inside the crash handler.
+/// Logs a crash outside Rust and tells the user, from inside the crash handler. Only Windows has
+/// a handler for crashes outside Rust, so it is only built there.
+#[cfg(windows)]
 fn native_crash(text: &str) {
     note(&format!("CRASHED: {text}"));
     let path = data_dir().join("crash.log");
