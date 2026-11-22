@@ -191,7 +191,7 @@ If you run BurnCraft on any of the untested controllers, a report of how it went
 - **Macros:** one-click buttons that send your own G-code, for example LaserPecker's red-dot and electric-stand commands.
 - **Rotary** (Laser → Rotary Setup, Ctrl+Shift+R):
   - Roller or chuck rotaries that replace the Y axis; jobs and framing are scaled so the design wraps the object at true size.
-  - A-axis output for 4-axis GRBL boards.
+  - A-axis output for 4-axis GRBL boards, or Z-axis output for rotaries wired to the controller's Z stepper (common for chucks on diode lasers).
   - "Rotate once" for calibration, plus a warning when a design is taller than the object's circumference.
   - Not available for galvos yet.
 - **Remote monitoring** (Settings → Remote monitoring): a page for any phone or computer on your network.

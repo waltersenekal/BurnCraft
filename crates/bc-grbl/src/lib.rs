@@ -10,7 +10,7 @@ pub mod protocol;
 pub mod settings;
 pub mod stream;
 
-pub use gcode::{generate, CustomGcode, Dialect, GcodeOptions, GrblLayer, GrblPath, ZAxis};
+pub use gcode::{generate, CustomGcode, Dialect, GcodeOptions, GrblLayer, GrblPath, RotaryAxis, ZAxis};
 pub use protocol::{parse_line, Response, Status};
 pub use stream::{Grbl, GrblError, StreamProgress};
 

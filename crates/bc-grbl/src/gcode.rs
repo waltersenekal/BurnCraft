@@ -32,6 +32,29 @@ pub struct GrblLayer {
     pub paths: Vec<GrblPath>,
 }
 
+/// Which axis drives a rotary attachment.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
+pub enum RotaryAxis {
+    /// The rotary replaces Y (the usual wiring).
+    #[default]
+    Y,
+    /// The rotary is a 4th (A) axis on the controller.
+    A,
+    /// The rotary is wired to the controller's Z output, so Z turns the object.
+    Z,
+}
+
+impl RotaryAxis {
+    /// The G-code word letter the rotary's position is written with.
+    pub fn letter(self) -> char {
+        match self {
+            RotaryAxis::Y => 'Y',
+            RotaryAxis::A => 'A',
+            RotaryAxis::Z => 'Z',
+        }
+    }
+}
+
 /// How the machine's Z axis is driven.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub struct ZAxis {
@@ -130,15 +153,15 @@ pub struct GcodeOptions {
     pub end_gcode: String,
     /// Air assist with M7 (mist) instead of M8 (flood).
     pub air_m7: bool,
-    /// Rotary on a 4th axis: write the Y coordinate as A.
-    pub y_as_a: bool,
+    /// The axis the rotary drives instead of Y (Y itself when there's no rotary).
+    pub rotary_axis: RotaryAxis,
     /// The machine has a Z axis to use for layer offsets and per-pass steps.
     pub z: Option<ZAxis>,
 }
 
 impl Default for GcodeOptions {
     fn default() -> Self {
-        Self { s_max: 1000.0, dialect: Dialect::Grbl, custom: CustomGcode::default(), start_gcode: String::new(), end_gcode: String::new(), air_m7: false, y_as_a: false, z: None }
+        Self { s_max: 1000.0, dialect: Dialect::Grbl, custom: CustomGcode::default(), start_gcode: String::new(), end_gcode: String::new(), air_m7: false, rotary_axis: RotaryAxis::Y, z: None }
     }
 }
 
@@ -219,7 +242,9 @@ pub fn generate(layers: &[GrblLayer], options: &GcodeOptions) -> Vec<String> {
         Dialect::Custom if c.inline_power => out.push(format!("{} S0", c.laser_on)),
         _ => {}
     }
-    let y_letter = if options.y_as_a { 'A' } else { 'Y' };
+    let rotary_letter = options.rotary_axis.letter();
+    // A rotary on Z owns the Z axis, so layers can't also step Z.
+    let z_axis = options.z.filter(|_| options.rotary_axis != RotaryAxis::Z);
     let s_text = |s: f64| if d == Dialect::Smoothieware { format!("{:.3}", s) } else { format!("{}", s.round() as i64) };
     let mut feed: Option<i64> = None;
     let mut s_value: Option<String> = None;
@@ -239,7 +264,7 @@ pub fn generate(layers: &[GrblLayer], options: &GcodeOptions) -> Vec<String> {
         let passes = layer.passes.max(1) as usize;
         let per_pass = if layer.paths.len() % passes == 0 { (layer.paths.len() / passes).max(1) } else { layer.paths.len().max(1) };
         for (i, path) in layer.paths.iter().enumerate() {
-            if let Some(axis) = options.z
+            if let Some(axis) = z_axis
                 && i % per_pass == 0
             {
                 let target = layer.z_offset - layer.z_step * (i / per_pass) as f64;
@@ -271,7 +296,7 @@ pub fn generate(layers: &[GrblLayer], options: &GcodeOptions) -> Vec<String> {
                     out.push(off.to_string());
                     laser_on = false;
                 }
-                out.push(format!("G0 X{} {y_letter}{}", fmt(path.points[0].0), fmt(path.points[0].1)));
+                out.push(format!("G0 X{} {rotary_letter}{}", fmt(path.points[0].0), fmt(path.points[0].1)));
             }
             if let PowerStyle::Commands { on, off } = style {
                 let wants_on = path.power > 0.0;
@@ -290,7 +315,7 @@ pub fn generate(layers: &[GrblLayer], options: &GcodeOptions) -> Vec<String> {
                 s_value = Some(s.clone());
             }
             for &(x, y) in &path.points[1..] {
-                let mut line = format!("G1 X{} {y_letter}{}", fmt(x), fmt(y));
+                let mut line = format!("G1 X{} {rotary_letter}{}", fmt(x), fmt(y));
                 if matches!(style, PowerStyle::Inline) && s_value.as_deref() != Some(s.as_str()) {
                     let _ = write!(line, " S{s}");
                     s_value = Some(s.clone());
@@ -308,7 +333,7 @@ pub fn generate(layers: &[GrblLayer], options: &GcodeOptions) -> Vec<String> {
             pos = Some(*path.points.last().unwrap());
         }
     }
-    if let Some(axis) = options.z
+    if let Some(axis) = z_axis
         && z.abs() > 1e-6
     {
         // Back to focus, where the job started.
@@ -329,4 +354,44 @@ pub fn generate(layers: &[GrblLayer], options: &GcodeOptions) -> Vec<String> {
     }
     out.retain(|l| !l.is_empty());
     out
+}
+
+#[cfg(test)]
+mod rotary_tests {
+    use super::*;
+
+    fn layer() -> GrblLayer {
+        GrblLayer {
+            speed: 10.0,
+            min_power: 20.0,
+            max_power: 20.0,
+            air_assist: false,
+            passes: 1,
+            z_offset: 1.0,
+            z_step: 0.5,
+            delay_on: 0.0,
+            delay_off: 0.0,
+            paths: vec![GrblPath { points: vec![(0.0, 0.0), (10.0, 20.0)], power: 1.0 }],
+        }
+    }
+
+    #[test]
+    fn rotary_letter_and_z_conflict() {
+        let layer = layer();
+        for (axis, letter) in [(RotaryAxis::Y, 'Y'), (RotaryAxis::A, 'A'), (RotaryAxis::Z, 'Z')] {
+            let options = GcodeOptions {
+                rotary_axis: axis,
+                z: Some(ZAxis::default()),
+                ..GcodeOptions::default()
+            };
+            let out = generate(std::slice::from_ref(&layer), &options).join("\n");
+            assert!(out.contains(&format!("G1 X10 {letter}20")), "{axis:?}: {out}");
+            let z_moves = out.lines().filter(|l| l.starts_with("G0 Z")).count();
+            if axis == RotaryAxis::Z {
+                assert_eq!(z_moves, 0, "Z moves must be suppressed: {out}");
+            } else {
+                assert!(z_moves > 0, "{axis:?}: {out}");
+            }
+        }
+    }
 }
