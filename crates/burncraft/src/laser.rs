@@ -1619,7 +1619,7 @@ impl Laser {
             }
         }
         if let Some(f) = &mut self.finder {
-            match f.show(ctx) {
+            match f.show(ctx, self.units) {
                 FinderOutcome::Open => {}
                 FinderOutcome::Close => self.finder = None,
                 FinderOutcome::Add(p) => {

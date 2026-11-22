@@ -298,7 +298,7 @@ Find My Laser, file import and the camera have been checked on all three. Galvo 
 
 ## Connecting your laser
 
-Open **Devices** in the Laser panel (or from the toolbar) and add your machine: **Find My Laser** finds lasers plugged in by USB (GRBL, Marlin, Smoothieware, Ruida) and sets the port and baud rate; **Create Manually** walks through controller, connection, size and origin step by step. Select the machine in the list, then click **Connect**.
+Open **Devices** in the Laser panel (or from the toolbar) and add your machine: **Find My Laser** finds lasers plugged in by USB (GRBL, Marlin, Smoothieware, Ruida) and sets the port and baud rate, plus the work area for GRBL boards (from their `$130` and `$131` settings); **Create Manually** walks through controller, connection, size and origin step by step, with **Read from machine** to fetch the work area. Select the machine in the list, then click **Connect**.
 
 <details>
 <summary><b>Ruida (most CO2 lasers)</b></summary>
@@ -316,7 +316,7 @@ Open **Devices** in the Laser panel (or from the toolbar) and add your machine: 
 1. Choose **G-code**, then the firmware.
 2. Pick the **serial port** and **baud rate** (usually 115200).
 3. Set the **full-power S value**: GRBL `$30` is usually 1000, Marlin uses 255, Smoothieware uses 1.
-4. Set the work area and origin corner. Most of these machines home bottom-left.
+4. Set the work area (or click **Read from machine** to take it from the controller's `$130` and `$131`) and the origin corner. Most of these machines home bottom-left.
 5. Optional: add start/end G-code, macros, M7 air assist, or turn DTR off if the board shouldn't reset when the port opens.
 
 For GRBL, make sure laser mode is enabled (`$32=1`) so the laser switches off during travel moves.
