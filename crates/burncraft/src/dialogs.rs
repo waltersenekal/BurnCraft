@@ -537,17 +537,22 @@ impl OffsetDialog {
     }
 }
 
-/// Check Design: lists what would spoil the job, with a way to select (and often fix) each.
+/// Check Design: lists what would spoil the job, with a way to select (and often fix) each, and
+/// reports broken outlines one at a time with the spot to show and a one-click repair.
 #[derive(Default)]
 pub struct CheckDialog {
-    /// The design revision the findings are for (checked again when the design changes).
+    /// The design revision the report is for (checked again when the design changes).
     revision: Option<u64>,
-    findings: Vec<bc_doc::check::Finding>,
+    report: bc_doc::check::Report,
 }
 
 pub enum CheckAction {
-    Select(std::collections::BTreeSet<u64>),
-    Fix(bc_doc::check::Problem, std::collections::BTreeSet<u64>),
+    Select(BTreeSet<u64>),
+    Fix(bc_doc::check::Problem, BTreeSet<u64>),
+    /// Frame this broken outline on the canvas and select it.
+    ShowOutline(Box<bc_doc::outline::Issue>),
+    /// Apply the repair offered for this broken outline.
+    FixOutline(Box<bc_doc::outline::Issue>),
     Close,
 }
 
@@ -555,44 +560,85 @@ impl CheckDialog {
     pub fn ui(&mut self, ctx: &egui::Context, doc: &bc_doc::Document, revision: u64) -> Option<CheckAction> {
         use bc_doc::check::Problem;
         if self.revision != Some(revision) {
-            self.findings = bc_doc::check::check(doc, doc.bed_size);
+            self.report = bc_doc::check::check(doc, doc.bed_size);
             self.revision = Some(revision);
         }
         let mut out = None;
         window(ctx, "Check Design").show(ctx, |ui| {
-            ui.set_width(460.0);
-            if self.findings.is_empty() {
+            ui.set_width(520.0);
+            if self.report.findings.is_empty() && self.report.outlines.is_empty() {
                 ui.label("No problems found.");
             }
-            egui::Grid::new("check-findings").num_columns(3).spacing([8.0, 6.0]).show(ui, |ui| {
-                for f in &self.findings {
-                    ui.add(egui::Label::new(format!("{} {}", f.shapes.len(), f.problem.describe())).wrap());
-                    if ui.button("Select").clicked() {
-                        out = Some(CheckAction::Select(f.shapes.clone()));
-                    }
-                    let fix = match f.problem {
-                        Problem::OpenOnFill | Problem::OpenOnLine => Some(("Close", "Join each shape's ends with a straight line")),
-                        Problem::Duplicate => Some(("Delete copies", "Delete the extra copies, keeping one of each")),
-                        Problem::Tiny => Some(("Delete", "Delete these shapes")),
-                        Problem::Overlap | Problem::Outside => None,
-                    };
-                    match fix {
-                        Some((label, about)) => {
-                            if ui.button(label).on_hover_text(about).clicked() {
-                                out = Some(CheckAction::Fix(f.problem, f.shapes.clone()));
+            if !self.report.findings.is_empty() {
+                egui::Grid::new("check-findings").num_columns(3).spacing([8.0, 6.0]).show(ui, |ui| {
+                    for f in &self.report.findings {
+                        ui.add(egui::Label::new(format!("{} {}", f.shapes.len(), f.problem.describe())).wrap());
+                        if ui.button("Select").clicked() {
+                            out = Some(CheckAction::Select(f.shapes.clone()));
+                        }
+                        let fix = match f.problem {
+                            Problem::Duplicate => Some(("Delete copies", "Delete the extra copies, keeping one of each")),
+                            Problem::Tiny => Some(("Delete", "Delete these shapes")),
+                            Problem::Overlap | Problem::Outside => None,
+                        };
+                        match fix {
+                            Some((label, about)) => {
+                                if ui.button(label).on_hover_text(about).clicked() {
+                                    out = Some(CheckAction::Fix(f.problem, f.shapes.clone()));
+                                }
+                            }
+                            None => {
+                                ui.label("");
                             }
                         }
-                        None => {
-                            ui.label("");
+                        ui.end_row();
+                    }
+                });
+            }
+            if !self.report.outlines.is_empty() {
+                ui.separator();
+                ui.label(egui::RichText::new(format!("Outlines that won\u{2019}t close ({})", self.report.outlines.len())).strong());
+                ui.weak("Each one stops the shape being cut, filled or welded as a single closed outline.");
+                egui::ScrollArea::vertical().id_salt("check-outlines").max_height(280.0).show(ui, |ui| {
+                    for issue in &self.report.outlines {
+                        if let Some(action) = Self::issue_row(ui, issue) {
+                            out = Some(action);
                         }
                     }
-                    ui.end_row();
-                }
-            });
+                });
+            }
             ui.weak("Only layers with Output on are checked. The list updates as you edit.");
             ui.separator();
             if ui.button("Close").clicked() {
                 out = Some(CheckAction::Close);
+            }
+        });
+        out
+    }
+
+    /// One broken outline in the list: what is wrong, with Show and Fix.
+    fn issue_row(ui: &mut egui::Ui, issue: &bc_doc::outline::Issue) -> Option<CheckAction> {
+        let mut out = None;
+        ui.group(|ui| {
+            let hint = ui
+                .add(
+                    egui::Label::new(egui::RichText::new(format!("\u{26a0} Layer {}: {}", bc_doc::layer_label(issue.layer), issue.hint)).color(Color32::from_rgb(200, 80, 50)))
+                        .sense(egui::Sense::click()),
+                )
+                .on_hover_text(format!("{}\n\nDouble-click to zoom in on this spot.", issue.message));
+            let show = hint.double_clicked();
+            ui.horizontal(|ui| {
+                if ui.button("Show").on_hover_text("Zoom in on this spot and select the shapes").clicked() {
+                    out = Some(CheckAction::ShowOutline(Box::new(issue.clone())));
+                }
+                if let Some(label) = issue.fix_label()
+                    && ui.button(format!("Fix: {label}")).on_hover_text("Repair the highlighted outline").clicked()
+                {
+                    out = Some(CheckAction::FixOutline(Box::new(issue.clone())));
+                }
+            });
+            if show {
+                out = Some(CheckAction::ShowOutline(Box::new(issue.clone())));
             }
         });
         out

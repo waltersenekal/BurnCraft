@@ -5,6 +5,7 @@ pub mod check;
 pub mod constraints;
 pub mod edit;
 pub mod effects;
+pub mod outline;
 pub mod vars;
 
 use bc_geom::{Affine, BezPath, Point, Rect};
