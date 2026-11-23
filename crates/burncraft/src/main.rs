@@ -10,6 +10,7 @@ mod units;
 mod upload;
 mod device;
 mod device_wizard;
+mod desktop;
 mod diagnostics;
 mod dialogs;
 mod editbar;
@@ -73,9 +74,8 @@ fn options(renderer: eframe::Renderer, persist_window: bool, software_ok: bool) 
     // Drawn by build.rs.
     let icon = eframe::egui::IconData { rgba: include_bytes!(concat!(env!("OUT_DIR"), "/icon-256.rgba")).to_vec(), width: 256, height: 256 };
     // Wayland has no way for a window to carry its own icon: the compositor looks up the icon of
-    // the .desktop file whose name matches this app id (see scripts/linux-desktop.sh). It is the
+    // the .desktop file whose name matches this app id (`--install-desktop` writes it). It is the
     // same id as CFBundleIdentifier on macOS.
-    const APP_ID: &str = "org.burncraft.BurnCraft";
     // eframe names its state folder after the app id, so pin it to where it has always been and
     // settings, window position and recovery files stay together in one place.
     let persistence_path = eframe::storage_dir("BurnCraft").map(|dir| dir.join("app.ron"));
@@ -84,7 +84,7 @@ fn options(renderer: eframe::Renderer, persist_window: bool, software_ok: bool) 
         viewport: eframe::egui::ViewportBuilder::default()
             .with_title("BurnCraft")
             .with_icon(icon)
-            .with_app_id(APP_ID)
+            .with_app_id(desktop::APP_ID)
             .with_inner_size([1500.0, 950.0])
             .with_min_inner_size([1000.0, 650.0])
             .with_drag_and_drop(true),
@@ -117,6 +117,12 @@ fn run(renderer: eframe::Renderer, persist_window: bool, software_ok: bool) -> e
 }
 
 fn main() {
+    // `--install-desktop` and `--uninstall-desktop` are one-shot jobs, not launches: do them before
+    // the log, the crash handler or the single-instance lock, so they also work while BurnCraft is
+    // running and no graphics driver can get in the way.
+    if let Some(code) = desktop::command_line() {
+        std::process::exit(code);
+    }
     // Decide before the log is overwritten: did the GPU renderer kill the last start?
     let prefer_opengl = startup::prefer_opengl();
     startup::begin();

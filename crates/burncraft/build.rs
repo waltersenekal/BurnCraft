@@ -2,12 +2,18 @@
 //!
 //! The icon is drawn from vector shapes at each size (so small sizes stay sharp):
 //! a flame on a dark rounded tile, struck by a cyan laser beam. Outputs in OUT_DIR:
-//! `burncraft.ico` (all sizes), `icon-256.png` (preview) and `icon-256.rgba` (window icon).
+//! `burncraft.ico` (all sizes), `icon-256.rgba` (window icon) and one `icon-<size>.png` per size
+//! in `DESKTOP_SIZES`, which the Linux desktop installer in src/desktop.rs embeds and writes into
+//! the icon theme (the 256 px one doubles as the preview image).
 
 use std::path::Path;
 use tiny_skia::{Color, FillRule, GradientStop, LinearGradient, Paint, PathBuilder, Pixmap, Point, SpreadMode, Stroke, Transform};
 
 const ICO_SIZES: [u32; 8] = [16, 20, 24, 32, 40, 48, 64, 256];
+
+/// Icon sizes for the Linux icon theme, in pixels. src/desktop.rs embeds one PNG per entry, so
+/// this list and its `ICONS` have to agree: a missing PNG there fails that file's build.
+const DESKTOP_SIZES: [u32; 7] = [16, 24, 32, 48, 64, 128, 256];
 
 fn main() {
     println!("cargo:rerun-if-changed=build.rs");
@@ -24,9 +30,8 @@ fn main() {
     image::codecs::ico::IcoEncoder::new(file).encode_images(&frames).expect("write icon");
 
     let big = draw(256);
-    big.save_png(out.join("icon-256.png")).expect("write preview");
-    for size in [16, 32] {
-        draw(size).save_png(out.join(format!("icon-{size}.png"))).expect("write preview");
+    for size in DESKTOP_SIZES {
+        draw(size).save_png(out.join(format!("icon-{size}.png"))).expect("write icon png");
     }
     // Straight (non-premultiplied) RGBA for the window icon.
     let rgba: Vec<u8> = big.pixels().iter().flat_map(|p| {
