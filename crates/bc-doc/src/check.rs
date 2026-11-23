@@ -8,10 +8,6 @@ pub type Selection = BTreeSet<u64>;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
 pub enum Problem {
-    /// Open shapes on a Fill layer: there's no inside to fill.
-    OpenOnFill,
-    /// Open shapes on a cutting layer: fine for score lines, but a part won't drop out.
-    OpenOnLine,
     /// The same shape twice on the same layer: it's cut twice.
     Duplicate,
     /// Lines of different shapes on top of each other (shared edges): cut twice.
@@ -25,8 +21,6 @@ pub enum Problem {
 impl Problem {
     pub fn describe(self) -> &'static str {
         match self {
-            Problem::OpenOnFill => "open shape(s) on Fill layers: they have no inside to fill",
-            Problem::OpenOnLine => "open shape(s) on cutting layers: fine for score lines, but a part cut with one won't drop out",
             Problem::Duplicate => "shape(s) with an exact copy on the same layer: they'd be cut twice",
             Problem::Overlap => "shape(s) with lines on top of another shape's (shared edges): those lines are cut twice",
             Problem::Tiny => "tiny shape(s), smaller than 0.1 mm: usually left over from editing",
@@ -42,6 +36,15 @@ pub struct Finding {
     pub shapes: Selection,
 }
 
+/// Everything a Design Check finds.
+#[derive(Debug, Clone, Default)]
+pub struct Report {
+    /// Problems that belong to a set of shapes, listed once each.
+    pub findings: Vec<Finding>,
+    /// Outlines that won't close, one at a time, each with the spot to show and how to repair it.
+    pub outlines: Vec<crate::outline::Issue>,
+}
+
 /// Lines closer than this (mm) count as on top of each other.
 const OVERLAP_DISTANCE: f64 = 0.02;
 /// Shared runs shorter than this (mm) are ignored (shapes touching at a corner, say).
@@ -50,7 +53,7 @@ const OVERLAP_LENGTH: f64 = 0.5;
 const MAX_SEGMENTS: usize = 60_000;
 
 /// Checks the shapes that will be output (layers with Output on, not the tool layers).
-pub fn check(doc: &Document, bed: (f64, f64)) -> Vec<Finding> {
+pub fn check(doc: &Document, bed: (f64, f64)) -> Report {
     let output: Vec<_> = doc.shapes.iter().filter(|s| !crate::is_tool_layer(s.layer) && doc.layers.get(s.layer).is_some_and(|l| l.output)).collect();
     let mut found: Vec<(Problem, Selection)> = Vec::new();
     let mut add = |p: Problem, id: u64| match found.iter_mut().find(|(q, _)| *q == p) {
@@ -61,14 +64,6 @@ pub fn check(doc: &Document, bed: (f64, f64)) -> Vec<Finding> {
     };
     for s in &output {
         let image = matches!(s.kind, ShapeKind::Image { .. });
-        let mode = doc.layers[s.layer].mode;
-        if !image && !s.is_closed() {
-            match mode {
-                LayerMode::Fill => add(Problem::OpenOnFill, s.id),
-                LayerMode::Line | LayerMode::FillThenLine => add(Problem::OpenOnLine, s.id),
-                LayerMode::Image => {}
-            }
-        }
         if let Some(b) = s.bounds() {
             if !image && b.width().max(b.height()) < 0.1 {
                 add(Problem::Tiny, s.id);
@@ -88,7 +83,8 @@ pub fn check(doc: &Document, bed: (f64, f64)) -> Vec<Finding> {
         add(Problem::Overlap, id);
     }
     found.sort_by_key(|(p, _)| *p);
-    found.into_iter().map(|(problem, shapes)| Finding { problem, shapes }).collect()
+    // Open and broken outlines are reported one at a time, so the interface can show each spot.
+    Report { findings: found.into_iter().map(|(problem, shapes)| Finding { problem, shapes }).collect(), outlines: crate::outline::issues(doc) }
 }
 
 /// Shapes (among `ids`, on cutting layers) with a line on top of a line of another shape on the
@@ -154,4 +150,53 @@ fn shared_run(a: Point, b: Point, c: Point, d: Point) -> f64 {
     let along = |p: Point| (p - a).dot(dir);
     let (t0, t1) = (along(c).min(along(d)), along(c).max(along(d)));
     (t1.min(len) - t0.max(0.0)).max(0.0)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::ShapeKind;
+    use bc_geom::{Affine, polyline_path};
+
+    fn lines(doc: &mut Document, corners: &[(f64, f64)]) {
+        for w in corners.windows(2) {
+            let pts = [Point::new(w[0].0, w[0].1), Point::new(w[1].0, w[1].1)];
+            doc.add_shape(ShapeKind::Path(polyline_path(&pts, false)), Affine::IDENTITY, 0);
+        }
+    }
+
+    #[test]
+    fn an_outline_of_separate_lines_is_reported_once_with_its_spot() {
+        let mut doc = Document::default();
+        lines(&mut doc, &[(0.0, 0.0), (20.0, 0.0), (20.0, 10.0), (0.0, 10.0), (0.0, 0.0)]);
+        let report = check(&doc, doc.bed_size);
+        assert!(report.findings.is_empty(), "the open lines are not a count of shapes: {:?}", report.findings);
+        assert_eq!(report.outlines.len(), 1);
+        assert_eq!(report.outlines[0].shapes.len(), 4);
+        assert_eq!(report.outlines[0].fix_label().as_deref(), Some("Join 4 lines"));
+        assert!(report.outlines[0].focus.width() >= 20.0);
+    }
+
+    #[test]
+    fn a_closed_design_has_nothing_to_report() {
+        let mut doc = Document::default();
+        let pts = [Point::new(0.0, 0.0), Point::new(10.0, 0.0), Point::new(10.0, 10.0), Point::new(0.0, 10.0)];
+        doc.add_shape(ShapeKind::Path(polyline_path(&pts, true)), Affine::IDENTITY, 0);
+        let report = check(&doc, doc.bed_size);
+        assert!(report.findings.is_empty());
+        assert!(report.outlines.is_empty());
+    }
+
+    #[test]
+    fn duplicates_are_still_counted() {
+        let mut doc = Document::default();
+        let pts = [Point::new(0.0, 0.0), Point::new(10.0, 0.0), Point::new(10.0, 10.0), Point::new(0.0, 10.0)];
+        doc.add_shape(ShapeKind::Path(polyline_path(&pts, true)), Affine::IDENTITY, 0);
+        doc.add_shape(ShapeKind::Path(polyline_path(&pts, true)), Affine::IDENTITY, 0);
+        let report = check(&doc, doc.bed_size);
+        assert_eq!(report.findings.len(), 1);
+        assert_eq!(report.findings[0].problem, Problem::Duplicate);
+        assert_eq!(report.findings[0].shapes.len(), 1, "the later copy is the duplicate");
+        assert!(report.outlines.is_empty());
+    }
 }

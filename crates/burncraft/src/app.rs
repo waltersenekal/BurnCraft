@@ -124,6 +124,13 @@ pub struct BurnCraftApp {
     pub(crate) revision: u64,
     /// The design revision the shown cut order was worked out for.
     cut_order_revision: Option<u64>,
+    /// Outlines that won't close, worked out when the design changes (see [`bc_doc::outline`]).
+    pub(crate) issues: Vec<bc_doc::outline::Issue>,
+    /// The design revision `issues` is for.
+    issues_revision: Option<u64>,
+    /// The problem the last warning showed, so the canvas keeps marking it and the next
+    /// double-click moves on to the one after it.
+    issue_focus: Option<bc_doc::outline::Issue>,
     saved_revision: u64,
     pub(crate) status: String,
     pub(crate) cursor: Option<Point>,
@@ -236,6 +243,9 @@ impl BurnCraftApp {
             revision: 0,
             lp2_frame_follow: None,
             cut_order_revision: None,
+            issues: Vec::new(),
+            issues_revision: None,
+            issue_focus: None,
             saved_revision: 0,
             status: "Ready".into(),
             cursor: None,
@@ -1836,6 +1846,12 @@ impl BurnCraftApp {
                     self.status = format!("Selected {} shape(s)", self.selection.len());
                 }
                 Some(crate::dialogs::CheckAction::Fix(problem, ids)) => self.fix_problem(problem, &ids),
+                Some(crate::dialogs::CheckAction::ShowOutline(issue)) => {
+                    self.show_issue(&issue);
+                    // The window would sit over the spot it just framed.
+                    keep = false;
+                }
+                Some(crate::dialogs::CheckAction::FixOutline(issue)) => self.fix_issue(&issue),
                 Some(crate::dialogs::CheckAction::Close) => keep = false,
                 None => {}
             },
@@ -2053,15 +2069,10 @@ impl BurnCraftApp {
         }
     }
 
-    /// Check Design's fixes: close open shapes, or delete copies and tiny shapes.
+    /// Check Design's fixes: delete copies and tiny shapes.
     fn fix_problem(&mut self, problem: bc_doc::check::Problem, ids: &BTreeSet<u64>) {
         use bc_doc::check::Problem;
         match problem {
-            Problem::OpenOnFill | Problem::OpenOnLine => {
-                self.checkpoint_named("Close open shapes");
-                let n = edit::close_paths(&mut self.doc, ids, f64::INFINITY);
-                self.status = format!("Closed {n} shape(s)");
-            }
             Problem::Duplicate | Problem::Tiny => {
                 self.checkpoint_named(if problem == Problem::Duplicate { "Delete duplicates" } else { "Delete tiny shapes" });
                 let n = self.doc.remove_where(|id| ids.contains(&id));
@@ -2071,6 +2082,102 @@ impl BurnCraftApp {
             Problem::Overlap | Problem::Outside => return,
         }
         self.revision += 1;
+    }
+
+    /// Keeps the list of outlines that won't close up to date. Worked out when the design changes
+    /// rather than every frame, because it flattens every shape.
+    fn refresh_issues(&mut self) {
+        if self.issues_revision == Some(self.revision) {
+            return;
+        }
+        self.issues = bc_doc::outline::issues(&self.doc);
+        self.issues_revision = Some(self.revision);
+        // Follow the problem the interface is showing through edits, or drop the mark once it has
+        // been repaired.
+        let key = self.issue_focus.as_ref().map(|i| i.key.clone());
+        self.issue_focus = key.and_then(|key| self.issues.iter().find(|i| i.key == key).cloned());
+    }
+
+    /// Whether the status bar should point out outlines that won't close: ones on Fill layers
+    /// (there is nothing to fill) and lines that meet end to end but aren't joined. A stray open
+    /// line may be a deliberate score line, so it waits in Check Design instead.
+    fn outlines_need_attention(&self) -> bool {
+        self.issues.iter().any(|i| i.fills || i.kind == bc_doc::outline::IssueKind::NotClosed)
+    }
+
+    /// Selects an outline and frames the exact spot that stops it closing.
+    pub(crate) fn show_issue(&mut self, issue: &bc_doc::outline::Issue) {
+        let Some(index) = self.issues.iter().position(|i| i.key == issue.key) else {
+            self.status = "That problem is no longer there".into();
+            return;
+        };
+        let issue = &self.issues[index];
+        // The exact spot, with a little room around it, so even a hairline gap shows.
+        self.canvas.zoom_to(issue.focus.inflate(2.0, 2.0));
+        self.selection = issue.shapes.clone();
+        self.canvas.tool = Tool::Select;
+        self.status = format!("Problem {} of {} ({}): {}", index + 1, self.issues.len(), issue.kind.label(), issue.hint);
+        self.issue_focus = Some(issue.clone());
+    }
+
+    /// Steps to the problem after the one shown (round to the first at the end), for a
+    /// double-click on the warning or the status bar.
+    fn show_next_issue(&mut self) {
+        if self.issues.is_empty() {
+            self.issue_focus = None;
+            self.status = "Nothing to show: every outline closes".into();
+            return;
+        }
+        let current = self.issue_focus.as_ref().and_then(|f| self.issues.iter().position(|i| i.key == f.key));
+        let next = current.map_or(0, |i| (i + 1) % self.issues.len());
+        let issue = self.issues[next].clone();
+        self.show_issue(&issue);
+    }
+
+    /// Applies the repair offered for a problem, then says what is left.
+    pub(crate) fn fix_issue(&mut self, issue: &bc_doc::outline::Issue) {
+        let Some(fix) = issue.fix else {
+            self.status = "This problem needs a manual fix".into();
+            return;
+        };
+        let ids: BTreeSet<u64> = issue.shapes.iter().copied().filter(|id| self.doc.shape(*id).is_some()).collect();
+        if ids.is_empty() {
+            self.status = "The shapes for this problem are no longer there".into();
+            self.issue_focus = None;
+            return;
+        }
+        self.selection = ids.clone();
+        let before = self.doc.shapes.len();
+        let mut closed = 0;
+        match fix {
+            bc_doc::outline::Fix::Join { .. } => {
+                self.checkpoint_named("Join outline");
+                self.selection = edit::auto_join(&mut self.doc, &ids, bc_doc::outline::JOIN_TOL);
+            }
+            bc_doc::outline::Fix::Close => {
+                self.checkpoint_named("Close outline");
+                closed = edit::close_paths(&mut self.doc, &ids, bc_doc::outline::JOIN_TOL);
+            }
+            bc_doc::outline::Fix::CloseGap => {
+                self.checkpoint_named("Close gap");
+                closed = edit::close_paths(&mut self.doc, &ids, f64::INFINITY);
+            }
+        }
+        self.issue_focus = None;
+        self.refresh_issues();
+        let what = fix.label().to_lowercase();
+        if closed == 0 && self.doc.shapes.len() == before {
+            self.status = format!("Could not {what} automatically: select the outline and repair it by hand");
+            return;
+        }
+        let left = self.issues.len();
+        self.status = if left == 0 {
+            format!("Fixed - {what}. Every outline closes now")
+        } else if self.outlines_need_attention() {
+            format!("Fixed - {what}. {left} problem(s) left; double-click the warning for the next")
+        } else {
+            format!("Fixed - {what}. {left} problem(s) left; Check Design (Laser menu) shows them")
+        };
     }
 
     /// Cut Box: a rectangle around the selection (or the whole design) on `layer`, or on a new
@@ -2256,6 +2363,19 @@ impl BurnCraftApp {
                 CanvasAction::EraseColour(at) => self.erase_colour(at),
                 CanvasAction::Transform(t) => edit::transform(&mut self.doc, &self.selection, t),
                 CanvasAction::SetSelection(sel) => self.set_selection(sel),
+                CanvasAction::SelectConnected { ids, count, add } => {
+                    let mut sel = if add { self.selection.clone() } else { BTreeSet::new() };
+                    sel.extend(ids);
+                    self.set_selection(sel);
+                    let total = self.selection.len();
+                    let key = if cfg!(target_os = "macos") { "Cmd+G" } else { "Ctrl+G" };
+                    self.status = if total > count {
+                        // Shapes in a group come with the run, so say so: the group is selected too.
+                        format!("{count} connected shapes selected, with their groups ({total} shapes) - Tools > Auto-Join makes them one outline")
+                    } else {
+                        format!("{count} connected shapes selected - press {key} to group them, or Tools > Auto-Join to make them one outline")
+                    };
+                }
                 CanvasAction::TextAt(p) => self.open_text_dialog(None, p),
                 CanvasAction::EditText(id) => self.open_text_dialog(Some(id), Point::ORIGIN),
                 CanvasAction::SetPath(id, path) => {
@@ -2346,7 +2466,44 @@ impl BurnCraftApp {
                 ui.monospace(format!("x: {:.2}, y: {:.2} {}", p.x / k, self.display_y(p.y) / k, u.suffix().trim()));
             }
             ui.separator();
-            ui.label(&self.status);
+            // Outlines that won't close are reported where the eye already is, and repaired or
+            // stepped through without opening a window. Before the status text, so a long message
+            // never pushes the warning out of sight.
+            if self.outlines_need_attention() {
+                let n = self.issues.len();
+                let text = egui::RichText::new(format!("\u{26a0} {n} outline problem{}", if n == 1 { "" } else { "s" })).color(Color32::from_rgb(250, 200, 70));
+                let mut hover: Vec<String> = self.issues.iter().take(8).map(|i| format!("\u{2022} Layer {}: {}", bc_doc::layer_label(i.layer), i.hint)).collect();
+                if n > hover.len() {
+                    hover.push(format!("\u{2026} and {} more", n - hover.len()));
+                }
+                hover.push(String::new());
+                hover.push("Double-click to zoom in on the first problem; double-click again for the next.".into());
+                hover.push("Check Design (Laser menu) lists them all.".into());
+                let warning = ui.add(egui::Label::new(text).selectable(false).sense(egui::Sense::click())).on_hover_text(hover.join("\n"));
+                if warning.double_clicked() {
+                    self.show_next_issue();
+                }
+            }
+            if let Some((issue, label)) = self.issue_focus.clone().and_then(|i| i.fix_label().map(|l| (i, l)))
+                && ui.add(egui::Button::new(format!("Fix: {label}")).small()).on_hover_text("Repair the highlighted outline").clicked()
+            {
+                self.fix_issue(&issue);
+            }
+            if self.outlines_need_attention() || self.issue_focus.is_some() {
+                ui.separator();
+            }
+            // With problems to look at, the message itself steps through them (as the warning
+            // does), so a single open outline on a cutting layer can still be stepped to.
+            if self.issues.is_empty() {
+                ui.label(&self.status);
+            } else {
+                let status = ui
+                    .add(egui::Label::new(&self.status).selectable(false).sense(egui::Sense::click()))
+                    .on_hover_text("Double-click to step through the outlines that won't close");
+                if status.double_clicked() {
+                    self.show_next_issue();
+                }
+            }
             ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                 ui.label(format!("Zoom {:.0}%", self.canvas.view.zoom / 1.5 * 100.0));
                 if let Some(b) = self.doc.bounds_of(self.selection.iter().copied()) {
@@ -2414,6 +2571,12 @@ impl eframe::App for BurnCraftApp {
         // While Trace Image is open, its result shows on the design as it'll be made.
         self.refresh_builder();
         self.refresh_cut_order();
+        // Outlines that won't close are looked for once the design settles: the pass flattens every
+        // shape, which would stutter a drag on a busy drawing.
+        if !ctx.input(|i| i.pointer.any_down()) {
+            self.refresh_issues();
+        }
+        self.canvas.issue = self.issue_focus.clone();
         self.canvas.highlight = match &self.dialog {
             Some(Dialog::Trace(d)) => d.result.clone(),
             _ => None,

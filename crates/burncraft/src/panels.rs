@@ -37,6 +37,27 @@ fn swatch(ui: &mut egui::Ui, index: usize, rgb: [u8; 3], size: f32) -> egui::Res
     faded_swatch(ui, index, rgb, size, 1.0)
 }
 
+/// The red used for outlines that won't close: the Layers panel's warning disc and its text.
+const PROBLEM: Color32 = Color32::from_rgb(214, 40, 32);
+
+/// A red disc with a white exclamation mark: this layer has outlines that won't close. Clicking it
+/// lists them and offers the repairs, so the problem is where the layer is, not only in the status
+/// bar.
+fn problem_badge(ui: &mut egui::Ui, count: usize, popup: egui::Id) -> egui::Response {
+    let (rect, response) = ui.allocate_exact_size(egui::vec2(17.0, 17.0), egui::Sense::click());
+    if ui.is_rect_visible(rect) {
+        let centre = rect.center();
+        ui.painter().circle_filled(centre, 7.5, PROBLEM);
+        ui.painter().text(centre - egui::vec2(0.0, 1.0), egui::Align2::CENTER_CENTER, "!", egui::FontId::proportional(12.0), Color32::WHITE);
+    }
+    if egui::Popup::is_id_open(ui.ctx(), popup) {
+        // The list is showing: no tooltip over it.
+        return response;
+    }
+    let hover = if count == 1 { "1 outline on this layer won't close: click to see it and fix it".to_string() } else { format!("{count} outlines on this layer won't close: click to see them and fix them") };
+    response.on_hover_text(hover)
+}
+
 /// Whether a layer is an Image layer for a LaserPecker 2, whose resolution is then picked from a
 /// drop-down instead of typing a line interval. (Fill layers keep the interval: the resolution
 /// nearest it is used.)
@@ -491,6 +512,8 @@ impl BurnCraftApp {
         let mut layers = self.doc.layers.clone();
         let revision = self.revision;
         let mut open_editor = None;
+        // An outline problem's list entry was clicked: (issue index, fix rather than show).
+        let mut act: Option<(usize, bool)> = None;
         egui::Grid::new("layers").num_columns(7).striped(true).spacing([6.0, 3.0]).show(ui, |ui| {
             let speed_power = if speed.depth { "Dpt/Pwr" } else { "Spd/Pwr" };
             for h in ["#", "Layer", "Mode", speed_power, "Output", "Show", "Air"] {
@@ -499,17 +522,52 @@ impl BurnCraftApp {
             ui.end_row();
             for &i in &used {
                 let selected = i == self.current_layer;
-                let name = ui.selectable_label(selected, &layers[i].name).on_hover_text("Right-click to remove this layer");
-                if name.clicked() {
-                    self.current_layer = i;
-                }
-                if !bc_doc::is_tool_layer(i) {
-                    let has_shapes = self.doc.shapes.iter().any(|s| s.layer == i);
-                    name.context_menu(|ui| self.remove_layer_button(ui, i, has_shapes));
-                }
-                if name.double_clicked() {
-                    open_editor = Some(i);
-                }
+                ui.horizontal(|ui| {
+                    ui.spacing_mut().item_spacing.x = 4.0;
+                    let name = ui.selectable_label(selected, &layers[i].name).on_hover_text("Right-click to remove this layer");
+                    if name.clicked() {
+                        self.current_layer = i;
+                    }
+                    if !bc_doc::is_tool_layer(i) {
+                        let has_shapes = self.doc.shapes.iter().any(|s| s.layer == i);
+                        name.context_menu(|ui| self.remove_layer_button(ui, i, has_shapes));
+                    }
+                    if name.double_clicked() {
+                        open_editor = Some(i);
+                    }
+                    // Outlines that won't close are marked next to the layer's name: click the disc
+                    // to read them and repair them here.
+                    let problems: Vec<usize> = self.issues.iter().enumerate().filter(|(_, issue)| issue.layer == i).map(|(k, _)| k).collect();
+                    if !problems.is_empty() {
+                        let popup = egui::Id::new(("layer-problems", i));
+                        let badge = problem_badge(ui, problems.len(), popup);
+                        egui::Popup::menu(&badge)
+                            .id(popup)
+                            .close_behavior(egui::PopupCloseBehavior::CloseOnClickOutside)
+                            .show(|ui| {
+                                ui.set_max_width(360.0);
+                                let count = problems.len();
+                                ui.label(egui::RichText::new(format!("{count} outline{} on layer {} won't close", if count == 1 { "" } else { "s" }, bc_doc::layer_label(i))).strong());
+                                for (n, &k) in problems.iter().enumerate() {
+                                    let issue = &self.issues[k];
+                                    if n > 0 {
+                                        ui.separator();
+                                    }
+                                    ui.label(egui::RichText::new(format!("\u{26a0} {}", issue.hint)).color(PROBLEM)).on_hover_text(&issue.message);
+                                    ui.horizontal(|ui| {
+                                        if let Some(label) = issue.fix_label()
+                                            && ui.button(format!("Fix: {label}")).clicked()
+                                        {
+                                            act = Some((k, true));
+                                        }
+                                        if ui.button("Show").on_hover_text("Zoom in on it on the design").clicked() {
+                                            act = Some((k, false));
+                                        }
+                                    });
+                                }
+                            });
+                    }
+                });
                 let mut sw = faded_swatch(ui, i, layers[i].rgb(i), 16.0, if layers[i].output { 1.0 } else { 0.3 });
                 if !layers[i].output {
                     sw = sw.on_hover_text("Output is off: this layer won't be sent to the laser");
@@ -537,8 +595,19 @@ impl BurnCraftApp {
                 ui.end_row();
             }
         });
+        // Repair or frame the problem the disc listed, once the list is no longer being drawn.
+        if let Some((index, fix)) = act
+            && let Some(issue) = self.issues.get(index).cloned()
+        {
+            if fix {
+                self.fix_issue(&issue);
+            } else {
+                self.show_issue(&issue);
+            }
+        }
         if self.revision != revision {
-            // A layer was removed from the list's menu: these copies of the settings are stale.
+            // A layer was removed from the list's menu, or a problem was repaired: these copies of
+            // the settings are stale.
             return;
         }
         // Quick settings for the current layer.

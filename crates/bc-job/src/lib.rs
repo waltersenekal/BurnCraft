@@ -345,6 +345,12 @@ pub fn cut_order(doc: &Document) -> Vec<Vec<Point>> {
     out
 }
 
+/// How many of `shapes` can't be filled because they aren't closed outlines. Single-line text is
+/// left out: it is drawn as strokes on purpose, not because its outline broke.
+fn open_vectors(shapes: &[&Shape]) -> usize {
+    shapes.iter().filter(|s| !s.is_closed() && !matches!(s.kind, ShapeKind::Text { .. })).count()
+}
+
 /// Builds the job. With `only` set, just those shapes are output ("cut selected").
 pub fn build(doc: &Document, only: Option<&BTreeSet<u64>>, options: BuildOptions) -> Job {
     let mut job = Job::default();
@@ -362,17 +368,28 @@ pub fn build(doc: &Document, only: Option<&BTreeSet<u64>>, options: BuildOptions
         let mut paths: Vec<JobPath> = Vec::new();
         match settings.mode {
             LayerMode::Line => paths = line::perforate(line::line_paths(&vectors, settings), settings),
-            LayerMode::Fill => {
+            LayerMode::Fill | LayerMode::FillThenLine => {
                 paths = raster::fill_paths(&vectors, settings);
-                // Single-line text has nothing to fill: engrave its strokes instead.
-                let strokes: Vec<&Shape> = vectors.iter().copied().filter(|s| matches!(s.kind, ShapeKind::Text { .. }) && !s.is_closed()).collect();
-                if !strokes.is_empty() {
-                    paths.extend(line::line_paths(&strokes, settings));
+                // A shape that isn't closed has no inside to fill: say so rather than leave the
+                // user wondering why a Fill layer shows nothing (or fills only some of it).
+                let open = open_vectors(&vectors);
+                if open > 0 {
+                    let note = if settings.mode == LayerMode::Fill {
+                        format!("{open} open shape(s) have no inside to fill, so they aren't engraved: join or close them (Tools > Auto-Join, Close Paths), or put them on a Line layer")
+                    } else {
+                        format!("{open} open shape(s) have no inside to fill; only their outlines are cut")
+                    };
+                    job.skipped.push((index, note));
                 }
-            }
-            LayerMode::FillThenLine => {
-                paths = raster::fill_paths(&vectors, settings);
-                paths.extend(line::perforate(line::line_paths(&vectors, settings), settings));
+                // Single-line text has nothing to fill: engrave its strokes instead.
+                if settings.mode == LayerMode::Fill {
+                    let strokes: Vec<&Shape> = vectors.iter().copied().filter(|s| matches!(s.kind, ShapeKind::Text { .. }) && !s.is_closed()).collect();
+                    if !strokes.is_empty() {
+                        paths.extend(line::line_paths(&strokes, settings));
+                    }
+                } else {
+                    paths.extend(line::perforate(line::line_paths(&vectors, settings), settings));
+                }
             }
             LayerMode::Image => {
                 let mut settings = settings.clone();

@@ -57,7 +57,7 @@ It drives **Ruida** DSP controllers (most CO2 lasers), **G-code** machines (GRBL
 - **Opens RDWorks files:** `.rld` projects saved by RDWorks V8 open with their layers (colour, mode, speed, power, output), lines and curves, text, pictures and groups.
 - **Opens LaserPecker Design Space files:** `.lp2` projects open with their shapes, text, pictures and groups on Fill, Picture, Line and Cut layers, with each layer's depth, power, passes and resolution.
 - **Accurate preview:** see every burn, overscan and travel move with a scrubber and a time estimate before you fire the laser, or play the job as a simulation.
-- **Check Design:** finds open shapes, duplicates, shared edges, tiny leftovers and shapes off the bed before a job, with one-click fixes.
+- **Check Design:** finds broken outlines, duplicates, shared edges, tiny leftovers and shapes off the bed before a job, with one-click fixes. Each broken outline is reported on its own — an open line, a gap, or lines that meet end to end but were never joined — with the exact spot to zoom to and a safe **Join** or **Close** repair. Double-click a problem (in the check window, or the warning in the status bar) to jump to it and again to step through the rest.
 - **Variable text:** serial numbers, dates and CSV merge for batches of tags, labels and name plates.
 - **Camera overlay:** line up designs on the material using a webcam over the bed.
 - **Box generator:** finger-jointed boxes and living hinges, sized by inside or outside dimensions, with kerf compensation.
@@ -95,6 +95,7 @@ If you run BurnCraft on any of the untested controllers, a report of how it went
   - **Ruler guides:** drag them out of the rulers, and drag them back to remove.
 - **Selection and transforms:**
   - Click, Shift+click or drag a box to select. Drag to move.
+  - **Double-click a line** to take every shape joined to it end to end — touching corners, T-junctions and crossing outlines all count — then group it (Ctrl+G) or join it into one outline (Tools > Auto-Join). Shift adds the run to the selection. This is the quick way to pick up an outline that arrived as separate lines from a DXF or SVG.
   - Corner handles resize: proportional by default, Ctrl to stretch.
   - A rotate handle (Shift for 15° steps) and shear.
   - Exact X / Y / width / height with an aspect lock, rotate by any angle, mirror.
@@ -166,10 +167,11 @@ If you run BurnCraft on any of the untested controllers, a report of how it went
 - **Up to 255 colour layers.** Dimensions, jig slots and detected items go on hidden tool layers that are never sent to the laser, even in imported projects.
 - **Modes:**
   - **Line:** cut or score along outlines. Holes are cut before outer shapes, and parts are ordered nearest-next.
-  - **Fill:** raster-fill closed shapes (holes stay empty), at any scan angle, with optional cross-hatching. **Offset fill** instead traces rings inward from the outline, which is much faster for thin text and outlines.
+  - **Fill:** raster-fill closed shapes (holes stay empty), at any scan angle, with optional cross-hatching. **Offset fill** instead traces rings inward from the outline, which is much faster for thin text and outlines. A shape that isn't closed has no inside to fill, so it isn't filled: the Preview says how many shapes on the layer that is, and Check Design offers **Fix: Join** or **Fix: Close** for them.
   - **Fill + Line:** engrave the inside, then cut the outline.
   - **Image:** raster-engrave photos with Threshold, Ordered, Floyd–Steinberg, Atkinson, Jarvis or Stucki dithering, or Grayscale (power follows darkness on G-code machines).
 - **Move objects between layers:** click a palette colour, or right-click the selection and choose **Move to Layer** (the layer they're on is highlighted).
+- **Layer warnings:** a layer whose outlines won't close shows a red **!** next to its name. Click it to read what is wrong and press **Fix** there, or **Show** to zoom in on the exact spot.
 - **Per-layer settings:** speed, min/max power, passes, line interval, scan both ways, overscan, air assist, output on/off, visibility, pulse frequency for galvos, and perforation (dashed cutting: cut length and gap).
 - **Advanced settings:** kerf compensation, tabs/bridges (count, width, skip holes), lead-ins that start in the scrap, overcut so parts drop out cleanly, and laser on/off delays to pierce thick material (G-code machines).
 - **Cut Box:** one click adds a rectangle (with a margin and optional rounded corners) around the design on its own last layer, to cut the piece free.
@@ -400,7 +402,7 @@ BurnCraft is a Cargo workspace. Everything except the app itself is a standalone
 | Crate | Purpose |
 |---|---|
 | [`bc-geom`](crates/bc-geom) | Geometry on top of `kurbo`: outlines, flattening, hit testing, booleans and offsets (via `geo`), node editing, fillets |
-| [`bc-doc`](crates/bc-doc) | Document model: shapes, layers, groups, undo history, project files, editing operations, nesting, variable text |
+| [`bc-doc`](crates/bc-doc) | Document model: shapes, layers, groups, undo history, project files, editing operations, nesting, variable text, and finding or repairing outlines that won't close |
 | [`bc-raster`](crates/bc-raster) | Image decoding, adjustments, resampling, dithering, tracing |
 | [`bc-io`](crates/bc-io) | LightBurn / RDWorks / LaserPecker / SVG / DXF / image import, `.lbdev` device files, SVG export, fonts and text outlines, barcodes, CSV |
 | [`bc-job`](crates/bc-job) | Job builder: kerf, tabs, lead-ins, ordering, fills, overscan, image rasterising, grayscale, time estimates |

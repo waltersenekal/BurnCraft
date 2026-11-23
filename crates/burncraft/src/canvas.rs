@@ -311,6 +311,8 @@ pub struct Canvas {
     pub machine_origin: Option<Point>,
     /// Lines to show over the design, highlighted (a live preview: what Trace Image will make).
     pub highlight: Option<bc_geom::BezPath>,
+    /// The broken outline the interface is pointing at (see Check Design); marked in its own colour.
+    pub issue: Option<bc_doc::outline::Issue>,
     /// Shape Builder: the areas the selected shapes enclose (set by the app while the tool is on).
     pub builder_regions: Vec<bc_geom::BezPath>,
     gesture: Option<Gesture>,
@@ -373,6 +375,7 @@ impl Default for Canvas {
             allow_shear: true,
             machine_origin: None,
             highlight: None,
+            issue: None,
             builder_regions: Vec::new(),
             gesture: None,
             line_points: Vec::new(),
@@ -404,6 +407,9 @@ pub enum CanvasAction {
     /// Apply a document-space transform to the selection.
     Transform(Affine),
     SetSelection(BTreeSet<u64>),
+    /// A double-click on a shape: take the whole run of shapes joined end to end with it.
+    /// `count` is how many shapes the run has, before groups widen the selection.
+    SelectConnected { ids: BTreeSet<u64>, count: usize, add: bool },
     /// Text tool clicked at this point.
     TextAt(Point),
     /// Double-clicked a text shape or barcode.
@@ -895,6 +901,9 @@ impl Canvas {
                 }
             }
         }
+        if let Some(issue) = &self.issue {
+            self.draw_issue(&painter, origin, issue);
+        }
         self.draw_guides(&painter, rect, doc, response.hover_pos().or_else(|| ui.ctx().pointer_latest_pos()));
         let accent = ui.visuals().selection.stroke.color;
         if let Some(b) = doc.bounds_of(selection.iter().copied()) {
@@ -1028,6 +1037,34 @@ impl Canvas {
         }
 
         (actions, hover_doc, response)
+    }
+
+    /// Marks the broken outline the interface is pointing at: the outline in the problem's colour,
+    /// a dashed line across a gap, and a ring round the exact spot.
+    fn draw_issue(&self, painter: &egui::Painter, origin: Pos2, issue: &bc_doc::outline::Issue) {
+        let colour = Color32::from_rgb(255, 78, 58);
+        for line in &issue.highlights {
+            let pts: Vec<Pos2> = line.points.iter().map(|p| self.view.to_screen(origin, *p)).collect();
+            if pts.len() > 1 {
+                painter.add(egui::Shape::line(pts, Stroke::new(3.0, colour)));
+            }
+        }
+        if let Some((a, b)) = issue.gap {
+            let (pa, pb) = (self.view.to_screen(origin, a), self.view.to_screen(origin, b));
+            if pa.distance(pb) > 2.0 {
+                painter.add(egui::Shape::dashed_line(&[pa, pb], Stroke::new(2.0, colour), 8.0, 4.0));
+            }
+            for end in [pa, pb] {
+                painter.circle_stroke(end, 5.0, Stroke::new(2.0, colour));
+            }
+        }
+        if let Some(p) = issue.marker {
+            let c = self.view.to_screen(origin, p);
+            painter.circle_stroke(c, 11.0, Stroke::new(2.0, colour));
+            for d in [egui::vec2(1.0, 0.0), egui::vec2(0.0, 1.0)] {
+                painter.line_segment([c - d * 16.0, c + d * 16.0], Stroke::new(1.5, colour));
+            }
+        }
     }
 
     fn screen_rect(&self, origin: Pos2, b: Rect) -> egui::Rect {
@@ -1287,12 +1324,24 @@ impl Canvas {
         let (shift, ctrl) = response.ctx.input(|i| (i.modifiers.shift, i.modifiers.command));
         let origin = response.rect.min;
 
+        // A double-click on text edits its wording. On any other shape it takes the whole run
+        // joined to it, so an outline exported as separate lines is selected in one go, ready to
+        // group (Ctrl+G) or join (Tools > Auto-Join).
         if response.double_clicked()
-            && let Some(id) = pointer.and_then(|p| doc.hit_test(p, hit_tol))
-                && matches!(doc.shape(id).map(|s| &s.kind), Some(ShapeKind::Text { .. } | ShapeKind::Barcode { .. })) {
-                    actions.push(CanvasAction::EditText(id));
-                    return;
-                }
+            && let Some(p) = pointer
+            && let Some(id) = doc.hit_test(p, hit_tol)
+        {
+            if matches!(doc.shape(id).map(|s| &s.kind), Some(ShapeKind::Text { .. } | ShapeKind::Barcode { .. })) {
+                actions.push(CanvasAction::EditText(id));
+                return;
+            }
+            let run = bc_doc::outline::connected(doc, id, bc_doc::outline::JOIN_TOL);
+            if run.len() > 1 {
+                let count = run.len();
+                actions.push(CanvasAction::SelectConnected { ids: run, count, add: shift });
+                return;
+            }
+        }
         if response.clicked_by(primary)
             && let Some(p) = pointer {
                 let mut next = if shift { selection.clone() } else { BTreeSet::new() };

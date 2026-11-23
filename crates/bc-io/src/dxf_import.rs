@@ -154,3 +154,64 @@ fn de_boor(t: f64, p: usize, knots: &[f64], ctrl: &[Point], weights: &[f64]) -> 
     let [x, y, w] = d[p];
     Point::new(x / w, y / w)
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use bc_doc::{Document, ShapeKind, edit, outline};
+    use std::collections::BTreeSet;
+
+    fn line(x0: f64, y0: f64, x1: f64, y1: f64) -> String {
+        format!("0\nLINE\n8\n0\n10\n{x0}\n20\n{y0}\n11\n{x1}\n21\n{y1}\n")
+    }
+
+    fn document(data: &str) -> Document {
+        let mut doc = Document::default();
+        for imported in import(data.as_bytes()).expect("valid DXF").shapes {
+            doc.add_shape(ShapeKind::Path(imported.path), Affine::IDENTITY, 0);
+        }
+        doc
+    }
+
+    #[test]
+    fn a_rectangle_of_separate_lines_is_reported_and_can_be_joined() {
+        // A rectangle exported as four LINE entities, the way a DXF outline often arrives.
+        let dxf = format!(
+            "0\nSECTION\n2\nENTITIES\n{}{}{}{}0\nENDSEC\n0\nEOF\n",
+            line(0.0, 0.0, 20.0, 0.0),
+            line(20.0, 0.0, 20.0, 10.0),
+            line(20.0, 10.0, 0.0, 10.0),
+            line(0.0, 10.0, 0.0, 0.0)
+        );
+        let mut doc = document(&dxf);
+        assert_eq!(doc.shapes.len(), 4, "one shape per LINE entity");
+        let found = outline::issues(&doc);
+        assert_eq!(found.len(), 1, "the four lines are one outline that won't close");
+        assert_eq!(found[0].shapes.len(), 4);
+        assert_eq!(found[0].fix_label().as_deref(), Some("Join 4 lines"));
+
+        let joined = edit::auto_join(&mut doc, &found[0].shapes, outline::JOIN_TOL);
+        assert_eq!(joined.len(), 1, "the fix makes one shape");
+        assert!(doc.shape(*joined.iter().next().expect("the joined shape")).expect("still there").is_closed());
+        assert!(outline::issues(&doc).is_empty());
+    }
+
+    #[test]
+    fn double_clicking_one_line_finds_the_whole_outline() {
+        let dxf = format!(
+            "0\nSECTION\n2\nENTITIES\n{}{}{}{}{}0\nENDSEC\n0\nEOF\n",
+            line(0.0, 0.0, 20.0, 0.0),
+            line(20.0, 0.0, 20.0, 10.0),
+            line(20.0, 10.0, 0.0, 10.0),
+            line(0.0, 10.0, 0.0, 0.0),
+            line(40.0, 40.0, 50.0, 40.0)
+        );
+        let doc = document(&dxf);
+        let seed = doc.shapes[0].id;
+        let run = outline::connected(&doc, seed, outline::JOIN_TOL);
+        assert_eq!(run.len(), 4, "the four sides, not the separate line");
+        let all: BTreeSet<u64> = doc.shapes.iter().map(|s| s.id).collect();
+        assert_eq!(all.difference(&run).count(), 1);
+    }
+}
+
